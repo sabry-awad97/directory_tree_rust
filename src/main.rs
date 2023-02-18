@@ -1,5 +1,5 @@
-use std::fs::{self};
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 enum EntryType {
     File,
@@ -9,6 +9,33 @@ enum EntryType {
 struct Entry {
     name: String,
     entry_type: EntryType,
+}
+
+struct DirectoryReader {
+    path: PathBuf,
+}
+
+impl DirectoryReader {
+    fn new(path: &Path) -> DirectoryReader {
+        DirectoryReader {
+            path: PathBuf::from(path),
+        }
+    }
+
+    fn read_entries(&self) -> Result<Vec<Entry>, std::io::Error> {
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&self.path)? {
+            let entry = entry?;
+            let name = entry.file_name().into_string().unwrap();
+            let entry_type = if entry.path().is_dir() {
+                EntryType::Directory
+            } else {
+                EntryType::File
+            };
+            entries.push(Entry { name, entry_type });
+        }
+        Ok(entries)
+    }
 }
 
 enum LineType {
@@ -43,19 +70,8 @@ impl TreePrinter {
     }
 
     fn print_subtree(&self, path: &PathBuf, line_type: LineType, indent_level: usize) {
-        let entries = fs::read_dir(path)
-            .unwrap()
-            .map(|entry| {
-                let entry = entry.unwrap();
-                let name = entry.file_name().into_string().unwrap();
-                let entry_type = if entry.path().is_dir() {
-                    EntryType::Directory
-                } else {
-                    EntryType::File
-                };
-                Entry { name, entry_type }
-            })
-            .collect::<Vec<_>>();
+        let dir_reader = DirectoryReader::new(path);
+        let entries = dir_reader.read_entries().unwrap();
 
         for (i, entry) in entries.iter().enumerate() {
             let printer = TreePrinter::new(
