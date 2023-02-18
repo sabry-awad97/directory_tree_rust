@@ -1,5 +1,5 @@
-use std::fs;
-use std::path::Path;
+use std::fs::{self};
+use std::path::PathBuf;
 
 enum EntryType {
     File,
@@ -11,79 +11,90 @@ struct Entry {
     entry_type: EntryType,
 }
 
-#[derive(Clone)]
 enum LineType {
     Single,
     Last,
 }
 
-#[derive(Clone)]
 struct Line {
     line_type: LineType,
     indent_level: usize,
 }
 
-fn print_directory_tree(path: &Path, indent_level: usize, line: Line) {
-    let mut entries: Vec<Entry> = Vec::new();
-    for entry in fs::read_dir(path).unwrap() {
-        let entry = entry.unwrap();
-        let name = entry.file_name().into_string().unwrap();
-        let entry_type = if entry.path().is_dir() {
-            EntryType::Directory
-        } else {
-            EntryType::File
+struct TreePrinter {
+    prefix: String,
+    line_char: char,
+}
+
+impl TreePrinter {
+    fn new(line_type: LineType, indent_level: usize) -> TreePrinter {
+        let prefix = "│   ".repeat(indent_level);
+        let line_char = match (line_type, indent_level) {
+            (LineType::Single, 0) => ' ',
+            (LineType::Single, _) => '├',
+            (LineType::Last, _) => '└',
         };
-        entries.push(Entry { name, entry_type });
+        TreePrinter { prefix, line_char }
     }
 
-    for (index, entry) in entries.iter().enumerate() {
-        let is_last_entry = index == entries.len() - 1;
-        let line_char = match (line.clone().line_type, is_last_entry) {
-            (LineType::Single, false) => "├",
-            (LineType::Single, true) => "└",
-            (LineType::Last, false) => "│",
-            (LineType::Last, true) => " ",
-        };
-        let prefix = "│   ".repeat(indent_level);
-        let entry_line = format!("{}{}── {}", prefix, line_char, entry.name);
-
+    fn print_entry(&self, entry: &Entry) {
+        let entry_line = format!("{}{}── {}", self.prefix, self.line_char, entry.name);
         println!("{}", entry_line);
+    }
 
-        let new_indent_level = indent_level + 1;
-        let new_line = match (line.clone().line_type, is_last_entry) {
-            (LineType::Single, false) => Line {
-                line_type: LineType::Single,
-                indent_level: new_indent_level,
-            },
-            (LineType::Single, true) => Line {
-                line_type: LineType::Last,
-                indent_level: new_indent_level,
-            },
-            (LineType::Last, false) => Line {
-                line_type: LineType::Single,
-                indent_level: new_indent_level,
-            },
-            (LineType::Last, true) => Line {
-                line_type: LineType::Last,
-                indent_level: new_indent_level,
-            },
-        };
+    fn print_subtree(&self, path: &PathBuf, line_type: LineType, indent_level: usize) {
+        let entries = fs::read_dir(path)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                let name = entry.file_name().into_string().unwrap();
+                let entry_type = if entry.path().is_dir() {
+                    EntryType::Directory
+                } else {
+                    EntryType::File
+                };
+                Entry { name, entry_type }
+            })
+            .collect::<Vec<_>>();
 
-        if let EntryType::Directory = entry.entry_type {
-            let sub_path = path.join(&entry.name);
-            print_directory_tree(&sub_path, new_indent_level, new_line);
+        for (i, entry) in entries.iter().enumerate() {
+            let printer = TreePrinter::new(
+                if i == entries.len() - 1 {
+                    LineType::Last
+                } else {
+                    LineType::Single
+                },
+                indent_level + 1,
+            );
+            printer.print_entry(entry);
+
+            if let EntryType::Directory = entry.entry_type {
+                let sub_path = path.join(&entry.name);
+                printer.print_subtree(
+                    &sub_path,
+                    if i == entries.len() - 1 {
+                        LineType::Last
+                    } else {
+                        LineType::Single
+                    },
+                    indent_level + 1,
+                );
+            }
         }
     }
 }
 
+fn print_directory_tree(path: &PathBuf) {
+    let root = Entry {
+        name: path.to_string_lossy().into_owned(),
+        entry_type: EntryType::Directory,
+    };
+    let printer = TreePrinter::new(LineType::Last, 0);
+    printer.print_entry(&root);
+    printer.print_subtree(path, LineType::Last, 0);
+}
+
 fn main() {
-    let path = Path::new(".");
-    print_directory_tree(
-        path,
-        0,
-        Line {
-            line_type: LineType::Last,
-            indent_level: 0,
-        },
-    );
+    let path = PathBuf::from(".");
+    print_directory_tree(&path);
 }
