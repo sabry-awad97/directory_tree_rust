@@ -1,116 +1,124 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-enum EntryType {
-    File,
-    Directory,
+enum FileSystemNode {
+    File(String),
+    Directory(String, Vec<FileSystemNode>),
 }
 
-struct Entry {
-    name: String,
-    entry_type: EntryType,
-}
-
-struct DirectoryReader {
-    path: PathBuf,
-}
-
-impl DirectoryReader {
-    fn new(path: &Path) -> DirectoryReader {
-        DirectoryReader {
-            path: PathBuf::from(path),
-        }
-    }
-
-    fn read_entries(&self) -> Result<Vec<Entry>, std::io::Error> {
-        let mut entries = Vec::new();
-        for entry in fs::read_dir(&self.path)? {
-            let entry = entry?;
-            let name = entry.file_name().into_string().unwrap();
-            let entry_type = if entry.path().is_dir() {
-                EntryType::Directory
-            } else {
-                EntryType::File
-            };
-            entries.push(Entry { name, entry_type });
-        }
-        Ok(entries)
-    }
-}
-
-enum LineType {
-    Single,
-    Last,
-}
-
-struct Line {
-    line_type: LineType,
-    indent_level: usize,
-}
-
-struct TreePrinter {
-    prefix: String,
+struct FileSystemTree {
+    root: FileSystemNode,
     line_char: char,
+    indent_size: usize,
 }
 
-impl TreePrinter {
-    fn new(line_type: LineType, indent_level: usize) -> TreePrinter {
-        let prefix = "│   ".repeat(indent_level);
-        let line_char = match (line_type, indent_level) {
-            (LineType::Single, 0) => ' ',
-            (LineType::Single, _) => '├',
-            (LineType::Last, _) => '└',
-        };
-        TreePrinter { prefix, line_char }
+impl FileSystemTree {
+    fn new(root_path: &PathBuf) -> Self {
+        let root_name = root_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let root = FileSystemNode::Directory(root_name, Vec::new());
+        Self {
+            root,
+            line_char: '├',
+            indent_size: 4,
+        }
     }
 
-    fn print_entry(&self, entry: &Entry) {
-        let entry_line = format!("{}{}── {}", self.prefix, self.line_char, entry.name);
-        println!("{}", entry_line);
-    }
+    fn build(&mut self) {
+        let root_path = self.root.path();
+        let mut stack = vec![(root_path.clone(), &mut self.root)];
 
-    fn print_subtree(&self, path: &PathBuf, line_type: LineType, indent_level: usize) {
-        let dir_reader = DirectoryReader::new(path);
-        let entries = dir_reader.read_entries().unwrap();
+        while let Some((path, node)) = stack.pop() {
+            let entries = fs::read_dir(&path).unwrap();
+            let mut children = Vec::new();
 
-        for (i, entry) in entries.iter().enumerate() {
-            let printer = TreePrinter::new(
-                if i == entries.len() - 1 {
-                    LineType::Last
+            for entry in entries {
+                let entry_path = entry.unwrap().path();
+                let entry_name = entry_path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+
+                let child = if entry_path.is_dir() {
+                    FileSystemNode::Directory(entry_name, Vec::new())
                 } else {
-                    LineType::Single
-                },
-                indent_level + 1,
-            );
-            printer.print_entry(entry);
+                    FileSystemNode::File(entry_name)
+                };
 
-            if let EntryType::Directory = entry.entry_type {
-                let sub_path = path.join(&entry.name);
-                printer.print_subtree(
-                    &sub_path,
-                    if i == entries.len() - 1 {
-                        LineType::Last
-                    } else {
-                        LineType::Single
-                    },
-                    indent_level + 1,
-                );
+                children.push(child);
+            }
+
+            node.set_children(children);
+
+            for child in node.children_mut() {
+                if let FileSystemNode::Directory(_, _) = child {
+                    let child_path = child.path();
+                    stack.push((child_path.clone(), child));
+                }
+            }
+        }
+    }
+
+    fn print(&self) {
+        self.print_node(&self.root, "");
+    }
+
+    fn print_node(&self, node: &FileSystemNode, indent: &str) {
+        match node {
+            FileSystemNode::File(name) => {
+                println!("{}{}── {}", indent, self.line_char, name);
+            }
+            FileSystemNode::Directory(name, children) => {
+                println!("{}{}── {}", indent, self.line_char, name);
+                let last_index = children.len() - 1;
+                for (i, child) in children.iter().enumerate() {
+                    let line_char = if i == last_index { '└' } else { '├' };
+                    let child_indent = format!(
+                        "{:indent_size$}{}",
+                        "",
+                        line_char,
+                        indent_size = self.indent_size
+                    );
+                    self.print_node(child, &(indent.to_owned() + &child_indent));
+                }
             }
         }
     }
 }
 
-fn print_directory_tree(path: &PathBuf) {
-    let root = Entry {
-        name: path.to_string_lossy().into_owned(),
-        entry_type: EntryType::Directory,
-    };
-    let printer = TreePrinter::new(LineType::Last, 0);
-    printer.print_entry(&root);
-    printer.print_subtree(path, LineType::Last, 0);
+impl FileSystemNode {
+    fn path(&self) -> PathBuf {
+        match self {
+            FileSystemNode::File(name) => PathBuf::from(name),
+            FileSystemNode::Directory(name, _) => PathBuf::from(name),
+        }
+    }
+
+    fn set_children(&mut self, children: Vec<FileSystemNode>) {
+        if let FileSystemNode::Directory(_, existing_children) = self {
+            *existing_children = children;
+        }
+    }
+
+    fn children_mut(&mut self) -> &mut Vec<FileSystemNode> {
+        if let FileSystemNode::Directory(_, children) = self {
+            children
+        } else {
+            panic!("Cannot get children of file node");
+        }
+    }
 }
 
 fn main() {
-    let path = PathBuf::from(".");
-    print_directory_tree(&path);
+    let path = PathBuf::from("src");
+    let mut tree = FileSystemTree::new(&path);
+
+    tree.build();
+
+    // print the tree to the console
+    tree.print();
 }
